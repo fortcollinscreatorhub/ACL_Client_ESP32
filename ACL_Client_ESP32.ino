@@ -31,7 +31,7 @@
 #define AP_NAME_2 "FCCreatorHub-5"
 #define AP_NAME_3 "FCCreatorHub-2.4"
 #define AP_PASSWD "makerspace"
-#define API_HOST  "10.1.10.86"
+#define API_HOST  "10.1.10.145"
 #define API_PORT  8080
 
 const int READER_POWER  = 12;
@@ -40,8 +40,9 @@ const int ACCESS_LED    = 32;
 const int CONNECTED_LED = 21;
 
 const unsigned long MAX_READ_TIME = 500;
+const int MAX_TRIES = 3;
 
-HardwareSerial Serial1(1);
+//HardwareSerial Serial1(1); // no longer needed with latest ESP32 Arduino library
 WiFiMulti wifiMulti;
 
 void setup()
@@ -185,6 +186,7 @@ struct rfid_s get_RFID () {
 bool link_up = false;
 struct rfid_s last_rfid = {0, false};
 bool acl_ok = false;
+int attempts = 0;
 
 void blinkit_high(int pin, int count, int wait){
   for (int i=count; i>0; i--) {
@@ -293,6 +295,17 @@ void loop()
     if (last_rfid.valid && cardno.valid && (last_rfid.value == cardno.value)) {
       // don't bother looking anything up
       // pass
+      
+    } else if (last_rfid.valid && (attempts > 0)) {
+      // don't turn off output yet, reset reader and try again
+      if (cardno.valid) {
+        Serial.printf ("Different card sensed, %d tries left\n", attempts);
+      } else {
+        Serial.printf ("Invalid card sensed, %d tries left\n", attempts);
+      }
+      attempts--;
+      blinkit_low (ACCESS_LED, 10, 125);
+      
     } else if (link_up & cardno.valid) {
 
       int result = query_rfid (cardno.value);
@@ -301,14 +314,17 @@ void loop()
         good_rfid_sequence();
         last_rfid = cardno;
         acl_ok = true;
+        attempts = MAX_TRIES;
       } else if (result == 0) {
         bad_rfid_sequence();
         last_rfid = cardno;
+        attempts = 0;
         acl_ok = false;
       } else {
         no_rfid_sequence();
         last_rfid.valid = false;
         acl_ok = false;
+        attempts = 0;
       }
     } else {
       // link down or corrupted card
@@ -318,15 +334,22 @@ void loop()
     }
   } else {
     // no card sensed by reader
-    
-    no_rfid_sequence();
 
-    // log an invalid card number so log will show how long the machine was in use
-    if (acl_ok && last_rfid.valid && link_up) {
-      query_rfid(0);
+    if (last_rfid.valid && (attempts > 0)) {
+      // don't turn off output yet, reset reader and try again
+        Serial.printf ("No card sensed, %d tries left\n", attempts);
+        attempts--;
+        blinkit_low (ACCESS_LED, 5, 125);
+    } else {
+      no_rfid_sequence();
+
+      // log an invalid card number so log will show how long the machine was in use
+      if (acl_ok && last_rfid.valid && link_up) {
+        query_rfid(0);
+      }
+      last_rfid.valid = false;
+      acl_ok = false;
     }
-    last_rfid.valid = false;
-    acl_ok = false;
   }
 
   // since the RFID reader cannot guarantee that a card
@@ -342,4 +365,3 @@ void loop()
   }
   
 }
-
