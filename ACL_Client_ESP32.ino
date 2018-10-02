@@ -11,8 +11,12 @@
  * This sketch will wait for an RFID to be sent by the reader and then
  * validate it with the Creator Hub's ACL server API via WiFi
  * 
- * In the future, I may expand this sketch to cache a copy of the
- * current list of valid RFIDs for this machine.
+ * Depending on whether this is a door controller or not, it will
+ * power down the RFID reader (via a transistor) to allow a stationary
+ * RFID card or fob to be reread repeatedly.
+ * 
+ * This sketch may cache a copy of the current list of valid RFIDs for 
+ * this machine/door (configurable).
  * 
  */
 #include <Arduino.h>
@@ -25,22 +29,37 @@
 
 
 ////////////////// Change to correct values for application ////////////////
-#define ACL       "medium-laser-cutter"
-#define AP_NAME_0 "FCCH_WIFI_5GHz"
+
+#define DOOR
+//#define ACL       "medium-laser-cutter"
+#define ACL       "door"
+
+#define CACHE_ACL
+
+//#define AP_NAME_0 "FCCH_WIFI_5GHz"
+#define AP_NAME_0 "carriad"
 #define AP_NAME_1 "FCCH_WIFI"
 #define AP_NAME_2 "FCCreatorHub-5"
 #define AP_NAME_3 "FCCreatorHub-2.4"
-#define AP_PASSWD "makerspace"
-#define API_HOST  "10.1.10.145"
+//#define AP_PASSWD "makerspace"
+#define AP_PASSWD "noregrets"
+//#define API_HOST  "10.1.10.145"
+#define API_HOST "192.168.1.3"
 #define API_PORT  8080
 
+#ifndef DOOR
 const int READER_POWER  = 12;
+#endif
 const int RELAY_POWER   = 14;
 const int ACCESS_LED    = 32;
 const int CONNECTED_LED = 21;
 
 const unsigned long MAX_READ_TIME = 500;
+#ifdef DOOR
+const int DOOR_UNLOCK_TIME = 5; // seconds
+#else
 const int MAX_TRIES = 3;
+#endif DOOR
 
 //HardwareSerial Serial1(1); // no longer needed with latest ESP32 Arduino library
 WiFiMulti wifiMulti;
@@ -51,16 +70,20 @@ void setup()
   Serial.begin(9600);         // the Serial port of Arduino baud rate.
   Serial.println ("Hello!");
     
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
+  //pinMode(LED_BUILTIN, OUTPUT);
+  //digitalWrite(LED_BUILTIN, LOW);
+#ifndef DOOR
   pinMode(READER_POWER, OUTPUT);
+#endif
   pinMode(RELAY_POWER, OUTPUT);
   pinMode(ACCESS_LED, OUTPUT);
   pinMode(CONNECTED_LED, OUTPUT);
 
-  
+
+#ifndef DOOR
   // power up RFID reader
   digitalWrite(READER_POWER, HIGH);
+#endif
   digitalWrite(ACCESS_LED, LOW);
   digitalWrite(CONNECTED_LED, LOW);
   digitalWrite(RELAY_POWER, LOW);
@@ -70,8 +93,12 @@ void setup()
   wifiMulti.addAP(AP_NAME_2, AP_PASSWD);
   wifiMulti.addAP(AP_NAME_3, AP_PASSWD);
   
-  
-  //Serial1.println("Hello!");
+}
+
+// Diagnostic routine that returns approximate free memory
+//
+int freeRAM () {
+  return (ESP.getFreeHeap()); 
 }
 
 struct rfid_s {
@@ -79,6 +106,8 @@ struct rfid_s {
   bool valid;
 };
 
+// Validate data from RFID reader against CRC data
+//
 bool check_crc (unsigned long data, unsigned long crc) {
   unsigned long res = 0;
 #ifdef DEBUG
@@ -99,6 +128,8 @@ bool check_crc (unsigned long data, unsigned long crc) {
   return (res == 0);
 }
 
+// get RFID from reader (via hw serial port)
+//
 struct rfid_s get_RFID () {
   unsigned long rfid = 0;
   unsigned long crc = 0;
@@ -125,7 +156,7 @@ struct rfid_s get_RFID () {
       if (in_byte == 0x2) {
         // Detected the "start" char
         //
-        digitalWrite(LED_BUILTIN, HIGH);
+        //digitalWrite(LED_BUILTIN, HIGH);
         reading = true;
         count = 0;
         rfid = 0x0;
@@ -157,7 +188,7 @@ struct rfid_s get_RFID () {
         //
         reading = false;
         found = true;
-        digitalWrite(LED_BUILTIN, LOW);
+        //digitalWrite(LED_BUILTIN, LOW);
         break;
 
 #ifdef DEBUG
@@ -183,7 +214,14 @@ struct rfid_s get_RFID () {
   return (retval);
 }
 
-bool link_up = false;
+bool link_up = false;     // are we connected to WiFi?
+bool OK_to_query = false; // can we query RFID?
+
+#ifdef CACHE_ACL
+bool acl_loaded = false;
+char *acl_cache = NULL;
+#endif
+
 struct rfid_s last_rfid = {0, false};
 bool acl_ok = false;
 int attempts = 0;
@@ -227,12 +265,125 @@ void no_rfid_sequence () {
   digitalWrite (ACCESS_LED, LOW);
 }
 
+#ifdef CACHE_ACL
+
+// Load ACL from server into a cache
+//
+bool read_acl () {
+  char query[128];
+  sprintf(query, "/api/get-acl-0/%s", ACL);
+
+  HTTPClient http;
+  http.begin(API_HOST, API_PORT, query);
+  http.setTimeout(5000); // set timeout to 5 seconds
+
+  int httpCode = http.GET();
+  if (httpCode > 0) {
+    if (httpCode == HTTP_CODE_OK) {
+      int payload_size = http.getSize();
+      if (payload_size > 0) {
+        if (acl_loaded && (acl_cache != NULL)) {
+#ifdef DEBUG
+          Serial.print("Before free(): freeRam = ");
+          Serial.println(freeRAM());
+#endif DEBUG
+          free (acl_cache);
+        }
+#ifdef DEBUG
+        Serial.print("Before malloc(): freeRam =");
+        Serial.println(freeRAM());
+#endif DEBUG
+        acl_cache = (char *) malloc (payload_size+2);
+#ifdef DEBUG
+        Serial.print("After malloc(): freeRam =");
+        Serial.println(freeRAM());
+#endif DEBUG
+        strcpy (acl_cache, http.getString().c_str());
+        acl_cache[payload_size] = '\n';
+        acl_cache[payload_size+1] = '\0';
+        acl_loaded = true;
+//#ifdef DEBUG
+//        Serial.print("acl_cache='");
+//        Serial.print(acl_cache);
+//        Serial.println("'");
+//#endif DEBUG
+        return (true);
+      } else {
+        Serial.print("http GET not OK, size = ");
+        Serial.println(payload_size);
+        blinkit_low(CONNECTED_LED, 5, 250);
+        return (false);
+      }
+      
+    } else {
+      Serial.print("http GET not OK, httpCode = ");
+      Serial.println(httpCode);
+      blinkit_low(CONNECTED_LED, 6, 250);
+      return (false);
+    }
+  } else {
+    Serial.printf ("http GET failed, httpCode = %s\n", http.errorToString(httpCode).c_str());
+    blinkit_low(CONNECTED_LED, 7, 250);
+    return (false);
+  }
+  return (false);
+}
+
+// Check RFID against cached ACL
+//
+bool query_rfid_cache (unsigned long rfid) {
+  char rfid_str[16];
+  sprintf (rfid_str, "\n%ld\n", rfid);
+#ifdef DEBUG
+  Serial.print ("rfid string = ");
+  Serial.println (rfid_str);
+#endif
+  if (strstr(acl_cache, rfid_str) != NULL) {
+    Serial.println("CACHE: ACL OK");
+    return (true);
+  } else {
+    Serial.println("CACHE: ACL Invalid");
+    return (false);
+  }
+  return (false);
+}
+
+#endif CACHE_ACL
+
 // Validate the RFID with the server
 //
 // Return 1 if good
 //        0 if bad
 //       -1 if error on request
 int query_rfid (unsigned long rfid) {
+
+#ifdef CACHE_ACL
+  if (link_up) {
+    // always load ACL cache when we can since we don't know when the list will change
+    // 
+    read_acl();
+  }
+
+#ifdef DEBUG
+  if (link_up && acl_loaded) {
+    Serial.print ("Link is up, but checking cache anyway: ");
+    query_rfid_cache (rfid);
+  }
+#endif
+  
+  if (!link_up) {
+    if (acl_loaded) {
+      return (query_rfid_cache (rfid));
+    } else {
+      // we shouldn't be here if link is down and acl hasn't been loaded
+      return (-1);
+    }
+  }
+#endif
+
+  // Even if we cache acl, we always query the server (if link is up)
+  // This guarantees that the access will be logged.
+  
   HTTPClient http;
   
   char query[128];
@@ -269,12 +420,24 @@ int query_rfid (unsigned long rfid) {
 
 void loop()
 {
+
+  if (freeRAM() < 100000) {
+    Serial.println("WARNING! WARNING! freeRAM has fallen below 100000. Resetting!");
+    ESP.restart();
+  }
   
   if((wifiMulti.run() == WL_CONNECTED)) {
     if (!link_up) {
       link_up = true;
+
       digitalWrite (CONNECTED_LED, HIGH);
       Serial.println("Connected");
+
+      OK_to_query = true;
+#ifdef CACHE_ACL
+      read_acl();
+#endif
+      
       delay (500);
     }
   } else {
@@ -282,16 +445,54 @@ void loop()
       link_up = false;
       digitalWrite (CONNECTED_LED, LOW);
       Serial.println("Disonnected!");
+
+#ifndef CACHE_ACL
+      OK_to_query = false;
+#endif
+      
       delay (500);
     }
   }
 
-  
+#ifdef DOOR
+
   // see if data is coming from RFID reader
   if (Serial1.available())  {
     struct rfid_s cardno = get_RFID();
     Serial.printf ("cardno = %lu (%d)\n", cardno.value, cardno.valid);
 
+    if (OK_to_query & cardno.valid) {
+      int result = query_rfid (cardno.value);
+
+      if (result == 1) {
+        good_rfid_sequence();
+        delay (DOOR_UNLOCK_TIME * 1000);
+        no_rfid_sequence();
+
+        // eat any card reads that happened when door was unlocked
+        //
+        while (Serial1.available()) {
+          Serial1.read();
+        }
+        
+      
+      } else if (result == 0) {
+        bad_rfid_sequence();
+      } else {
+        no_rfid_sequence();
+      }
+    } else {
+      // link down or corrupted card
+      no_rfid_sequence();
+    }
+  }
+
+#else
+  // see if data is coming from RFID reader
+  if (Serial1.available())  {
+    struct rfid_s cardno = get_RFID();
+    Serial.printf ("cardno = %lu (%d)\n", cardno.value, cardno.valid);
+    
     if (last_rfid.valid && cardno.valid && (last_rfid.value == cardno.value)) {
       // don't bother looking anything up
       // pass
@@ -306,7 +507,7 @@ void loop()
       attempts--;
       blinkit_low (ACCESS_LED, 10, 125);
       
-    } else if (link_up & cardno.valid) {
+    } else if (OK_to_query & cardno.valid) {
 
       int result = query_rfid (cardno.value);
 
@@ -314,7 +515,9 @@ void loop()
         good_rfid_sequence();
         last_rfid = cardno;
         acl_ok = true;
+
         attempts = MAX_TRIES;
+
       } else if (result == 0) {
         bad_rfid_sequence();
         last_rfid = cardno;
@@ -350,6 +553,7 @@ void loop()
       last_rfid.valid = false;
       acl_ok = false;
     }
+    
   }
 
   // since the RFID reader cannot guarantee that a card
@@ -363,5 +567,7 @@ void loop()
     digitalWrite(READER_POWER, HIGH);
     delay(2500);
   }
+
+#endif DOOR
   
 }
