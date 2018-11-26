@@ -36,20 +36,15 @@
 
 #define CACHE_ACL
 
-//#define AP_NAME_0 "FCCH_WIFI_5GHz"
-#define AP_NAME_0 "carriad"
+#define AP_NAME_0 "FCCH_WIFI_5GHz"
 #define AP_NAME_1 "FCCH_WIFI"
 #define AP_NAME_2 "FCCreatorHub-5"
 #define AP_NAME_3 "FCCreatorHub-2.4"
-//#define AP_PASSWD "makerspace"
-#define AP_PASSWD "noregrets"
-//#define API_HOST  "10.1.10.145"
-#define API_HOST "192.168.1.3"
+#define AP_PASSWD "makerspace"
+#define API_HOST  "10.1.10.145"
 #define API_PORT  8080
 
-#ifndef DOOR
 const int READER_POWER  = 12;
-#endif
 const int RELAY_POWER   = 14;
 const int ACCESS_LED    = 32;
 const int CONNECTED_LED = 21;
@@ -72,18 +67,14 @@ void setup()
     
   //pinMode(LED_BUILTIN, OUTPUT);
   //digitalWrite(LED_BUILTIN, LOW);
-#ifndef DOOR
   pinMode(READER_POWER, OUTPUT);
-#endif
   pinMode(RELAY_POWER, OUTPUT);
   pinMode(ACCESS_LED, OUTPUT);
   pinMode(CONNECTED_LED, OUTPUT);
 
 
-#ifndef DOOR
   // power up RFID reader
   digitalWrite(READER_POWER, HIGH);
-#endif
   digitalWrite(ACCESS_LED, LOW);
   digitalWrite(CONNECTED_LED, LOW);
   digitalWrite(RELAY_POWER, LOW);
@@ -495,7 +486,7 @@ void loop()
     
     if (last_rfid.valid && cardno.valid && (last_rfid.value == cardno.value)) {
       // don't bother looking anything up
-      // pass
+      attempts = MAX_TRIES;
       
     } else if (last_rfid.valid && (attempts > 0)) {
       // don't turn off output yet, reset reader and try again
