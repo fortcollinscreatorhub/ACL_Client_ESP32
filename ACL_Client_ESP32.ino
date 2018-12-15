@@ -25,7 +25,7 @@
 #include <HTTPClient.h>
 
 
-//#define DEBUG
+#define DEBUG
 
 
 ////////////////// Change to correct values for application ////////////////
@@ -48,6 +48,8 @@ const int READER_POWER  = 12;
 const int RELAY_POWER   = 14;
 const int ACCESS_LED    = 32;
 const int CONNECTED_LED = 21;
+
+const int HTTP_TIMEOUT = 5;
 
 const unsigned long MAX_READ_TIME = 500;
 #ifdef DOOR
@@ -261,12 +263,17 @@ void no_rfid_sequence () {
 // Load ACL from server into a cache
 //
 bool read_acl () {
+
+#ifdef DEBUG
+  Serial.printf ("Reading ACL into cache\n");
+#endif
+  
   char query[128];
   sprintf(query, "/api/get-acl-0/%s", ACL);
 
   HTTPClient http;
   http.begin(API_HOST, API_PORT, query);
-  http.setTimeout(5000); // set timeout to 5 seconds
+  http.setTimeout(HTTP_TIMEOUT); // set timeout to 5 seconds
 
   int httpCode = http.GET();
   if (httpCode > 0) {
@@ -298,6 +305,9 @@ bool read_acl () {
 //        Serial.print(acl_cache);
 //        Serial.println("'");
 //#endif DEBUG
+#ifdef DEBUG
+        Serial.printf ("Success!\n");
+#endif
         return (true);
       } else {
         Serial.print("http GET not OK, size = ");
@@ -324,6 +334,9 @@ bool read_acl () {
 //
 bool query_rfid_cache (unsigned long rfid) {
   char rfid_str[16];
+#ifdef DEBUG
+  Serial.printf ("Checking cache...\n");
+#endif
   sprintf (rfid_str, "\n%ld\n", rfid);
 #ifdef DEBUG
   Serial.print ("rfid string = ");
@@ -349,31 +362,24 @@ bool query_rfid_cache (unsigned long rfid) {
 int query_rfid (unsigned long rfid) {
 
 #ifdef CACHE_ACL
+
   if (link_up) {
     // always load ACL cache when we can since we don't know when the list will change
     // 
-    read_acl();
-  }
-
-#ifdef DEBUG
-  if (link_up && acl_loaded) {
-    Serial.print ("Link is up, but checking cache anyway: ");
-    query_rfid_cache (rfid);
-  }
-#endif
-  
-  if (!link_up) {
-    if (acl_loaded) {
-      return (query_rfid_cache (rfid));
-    } else {
-      // we shouldn't be here if link is down and acl hasn't been loaded
-      return (-1);
+    bool server_up = read_acl();
+    if (!server_up) {
+      Serial.printf ("Server failure!\n");
     }
   }
+
 #endif
 
   // Even if we cache acl, we always query the server (if link is up)
   // This guarantees that the access will be logged.
+
+#ifdef DEBUG
+  Serial.printf("Querying the server (to log)...\n");
+#endif
   
   HTTPClient http;
   
@@ -381,7 +387,7 @@ int query_rfid (unsigned long rfid) {
   sprintf(query, "/api/check-access-0/%s/%lu", ACL, rfid);
 
   http.begin(API_HOST, API_PORT, query);
-  http.setTimeout(20000); // set timeout to 20 seconds
+  http.setTimeout(HTTP_TIMEOUT); // set timeout to 5 seconds
 
   int httpCode = http.GET();
   if (httpCode > 0) {
@@ -453,7 +459,21 @@ void loop()
     Serial.printf ("cardno = %lu (%d)\n", cardno.value, cardno.valid);
 
     if (OK_to_query & cardno.valid) {
-      int result = query_rfid (cardno.value);
+      
+      int result;
+      bool used_cache = false;
+      
+#ifdef CACHE_ACL
+      if (acl_loaded) {
+        result = query_rfid_cache (cardno.value);
+        used_cache = true;
+      } else {
+        result = query_rfid (cardno.value);
+        used_cache = false;
+      }
+#else
+      result = query_rfid (cardno.value);
+#endif CACHE_ACL
 
       if (result == 1) {
         good_rfid_sequence();
@@ -472,6 +492,12 @@ void loop()
       } else {
         no_rfid_sequence();
       }
+
+      // We used the cache, go to the server to recache and log
+      if (used_cache) {
+        query_rfid (cardno.value);
+      }
+      
     } else {
       // link down or corrupted card
       no_rfid_sequence();
