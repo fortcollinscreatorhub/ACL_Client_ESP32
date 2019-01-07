@@ -25,7 +25,7 @@
 #include <HTTPClient.h>
 
 
-#define DEBUG
+//#define DEBUG
 
 
 ////////////////// Change to correct values for application ////////////////
@@ -49,7 +49,7 @@ const int RELAY_POWER   = 14;
 const int ACCESS_LED    = 32;
 const int CONNECTED_LED = 21;
 
-const int HTTP_TIMEOUT = 5;
+const int HTTP_TIMEOUT = 500;
 
 const unsigned long MAX_READ_TIME = 500;
 #ifdef DOOR
@@ -271,9 +271,19 @@ bool read_acl () {
   char query[128];
   sprintf(query, "/api/get-acl-0/%s", ACL);
 
+#ifdef DEBUG
+  Serial.print("HOST = ");
+  Serial.println(API_HOST);
+  Serial.print("PORT = ");
+  Serial.println(API_PORT);
+  Serial.print("query string = '");
+  Serial.print(query);
+  Serial.println("'");
+#endif
+
   HTTPClient http;
   http.begin(API_HOST, API_PORT, query);
-  http.setTimeout(HTTP_TIMEOUT); // set timeout to 5 seconds
+  //http.setTimeout(HTTP_TIMEOUT); // set timeout to 5 seconds
 
   int httpCode = http.GET();
   if (httpCode > 0) {
@@ -332,7 +342,7 @@ bool read_acl () {
 
 // Check RFID against cached ACL
 //
-bool query_rfid_cache (unsigned long rfid) {
+int query_rfid_cache (unsigned long rfid) {
   char rfid_str[16];
 #ifdef DEBUG
   Serial.printf ("Checking cache...\n");
@@ -344,12 +354,11 @@ bool query_rfid_cache (unsigned long rfid) {
 #endif
   if (strstr(acl_cache, rfid_str) != NULL) {
     Serial.println("CACHE: ACL OK");
-    return (true);
+    return (1);
   } else {
     Serial.println("CACHE: ACL Invalid");
-    return (false);
   }
-  return (false);
+  return (0);
 }
 
 #endif CACHE_ACL
@@ -369,6 +378,7 @@ int query_rfid (unsigned long rfid) {
     bool server_up = read_acl();
     if (!server_up) {
       Serial.printf ("Server failure!\n");
+      return(-1);
     }
   }
 
@@ -464,8 +474,7 @@ void loop()
       bool used_cache = false;
       
 #ifdef CACHE_ACL
-      if (acl_loaded) {
-        result = query_rfid_cache (cardno.value);
+      if (acl_loaded && (result = query_rfid_cache (cardno.value))) {
         used_cache = true;
       } else {
         result = query_rfid (cardno.value);
